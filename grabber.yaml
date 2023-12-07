@@ -1,0 +1,233 @@
+Parameters:
+
+  DeploymentName:
+    Description: Deployment name
+    Type: String
+    Default: radkowski-local-mirror
+
+  S3BucketName:
+    Description: S3 name
+    Type: String
+    Default: radkowski-bucket-mirror-saoddjhwadj
+
+  OrigURL:
+    Description: URL to be cloned
+    Type: String
+    Default: "https://mirror.exonetric.net/pub/OpenBSD/Changelogs/"
+
+
+Resources:
+
+
+  S3AsParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      DataType: text
+      Description: Destination S3
+      Name: /custom/cloneurl/dests3
+      Type: String
+      Value: !Ref S3BucketName
+
+  URLAsParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      DataType: text
+      Description: Source URL
+      Name: /custom/cloneurl/origurl
+      Type: String
+      Value: !Ref OrigURL
+
+  CodeBuildRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Join
+        - ''
+        - - !Ref DeploymentName
+          - -CodeBuild-Role
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: !Join
+            - ''
+            - - !Ref DeploymentName
+              - -CodeBuild-Policy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource:
+                  - !Join [ "", [ 'arn:aws:logs:',!Ref 'AWS::Region',':',!Ref 'AWS::AccountId',':','log-group:/aws/codebuild/', !Ref DeploymentName ] ]
+                  - !Join [ "", [ 'arn:aws:logs:',!Ref 'AWS::Region',':',!Ref 'AWS::AccountId',':','log-group:/aws/codebuild/', !Ref DeploymentName,':*' ] ]
+              - Effect: Allow
+                Action:
+                  - 's3:PutObject'
+                  - 's3:GetObject'
+                  - 's3:GetObjectVersion'
+                  - 's3:GetBucketAcl'
+                  - 's3:GetBucketLocation'
+                Resource:
+                  - !Join [ "", [ 'arn:aws:s3:::codepipeline-',!Ref 'AWS::Region','-*' ] ]
+              - Effect: Allow
+                Action:
+                  - 'codebuild:CreateReportGroup'
+                  - 'codebuild:CreateReport'
+                  - 'codebuild:UpdateReport'
+                  - 'codebuild:BatchPutTestCases'
+                  - 'codebuild:BatchPutCodeCoverages'
+                Resource:
+                  - !Join [ "", [ 'arn:aws:codebuild:',!Ref 'AWS::Region',':',!Ref 'AWS::AccountId',':report-group/',!Ref DeploymentName,'-*' ] ]
+              - Effect: Allow
+                Action:
+                  - 's3:PutObject'
+                Resource:
+                  - !Join [ "", [ 'arn:aws:s3:::',!Ref S3BucketName,'/*' ] ]
+              - Effect: Allow
+                Action:
+                  - 's3:ListBucket'
+                Resource:
+                  - !Join [ "", [ 'arn:aws:s3:::',!Ref S3BucketName ] ]
+              - Effect: Allow
+                Action:
+                  - 'ssm:GetParameters'
+                Resource:
+                  - !Join [ "", [ 'arn:aws:ssm:',!Ref 'AWS::Region',':',!Ref 'AWS::AccountId',':parameter/custom/cloneurl/dests3' ] ]
+                  - !Join [ "", [ 'arn:aws:ssm:',!Ref 'AWS::Region',':',!Ref 'AWS::AccountId',':parameter/custom/cloneurl/origurl' ] ]
+  CloudWatchRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Join
+        - ''
+        - - !Ref DeploymentName
+          - -CloudWatch-Role
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: !Join
+            - ''
+            - - !Ref DeploymentName
+              - -CloudWatch-Policy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'codebuild:StartBuild'
+
+                Resource:
+                  - !Join [ "", [ 'arn:aws:codebuild:',!Ref 'AWS::Region',':',!Ref 'AWS::AccountId',':project/', !Ref DeploymentName ] ]
+
+  S3Bucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Ref S3BucketName
+      PublicAccessBlockConfiguration: 
+          BlockPublicAcls: False
+          BlockPublicPolicy: False
+          IgnorePublicAcls: False
+          RestrictPublicBuckets: False
+
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      PolicyDocument:
+        Id: MyPolicy
+        Version: 2012-10-17
+        Statement:
+          - Sid: PublicReadGetObject
+            Effect: Allow
+            Principal: '*'
+            Action: 's3:GetObject'
+            Resource: !Join [ "", [ 'arn:aws:s3:::',!Ref S3BucketName,'/*' ] ]
+          - Sid: ReadWriteforCodeBuild
+            Effect: Allow
+            Principal:
+                AWS:
+                - !Join [ "", [ 'arn:aws:iam::',!Ref 'AWS::AccountId',':role/',!Ref DeploymentName,'-CodeBuild-Role' ] ]
+            Action: 's3:PutObject*'
+            Resource: !Join [ "", [ 'arn:aws:s3:::',!Ref S3BucketName,'/*' ] ]
+      Bucket: !Ref S3Bucket
+
+  CodeBuildUrlClone:
+        Type: "AWS::CodeBuild::Project"
+        Properties:
+            TimeoutInMinutes: 60
+            Artifacts:
+                Type: "NO_ARTIFACTS"
+            Cache:
+                Type: "NO_CACHE"
+            Environment:
+                ComputeType: "BUILD_GENERAL1_SMALL"
+                Image: "aws/codebuild/amazonlinux2-aarch64-standard:3.0"
+                Type: "ARM_CONTAINER"
+                PrivilegedMode: false
+                ImagePullCredentialsType: "CODEBUILD"
+            ServiceRole: !Ref CodeBuildRole
+            Name: !Ref DeploymentName
+            Source:
+                Type: "NO_SOURCE"
+
+                BuildSpec: |
+                    version: 0.2
+
+                    env:
+                      parameter-store:
+                        ORG_BUCKET: "/custom/cloneurl/dests3"
+                        ORG_URL: "/custom/cloneurl/origurl"
+
+                    phases:
+                      install:
+                        commands:
+                            - yum -y install wget
+                      build:
+                        commands:
+                           - mkdir /mnt/local
+                           - cd /mnt/local
+                           - wget -r -nH --no-parent --reject="index.html*" -m -e robots=off --progress=bar -q -nv $ORG_URL
+                           - aws s3 sync /mnt/local  s3://$ORG_BUCKET --delete --quiet
+
+  CodeBuildTrigger:
+      Type: AWS::Events::Rule
+      Properties:
+        Description: Trigger to start Url clone CodeBuild peoject
+        Name: !Join [ "", [ !Ref DeploymentName,'-CloudWatch-Events-Rule' ] ]
+        ScheduleExpression: 'cron(15 /8 ? * * *)'
+        State: ENABLED
+        Targets:
+          - Arn: !GetAtt
+              - CodeBuildUrlClone
+              - Arn
+            Id: Id1
+            RoleArn: !Join [ "", [ 'arn:aws:iam::',!Ref 'AWS::AccountId',':role/', !Ref DeploymentName,'-CloudWatch-Role' ] ]
+
+
+
+Outputs:
+  CodeBuildRef:
+    Description: 'CodeBuild Project'
+    Value: !GetAtt CodeBuildUrlClone.Arn
+  CloudWatchRuleRef:
+    Description: 'CloudWatch trigger'
+    Value: !GetAtt CodeBuildTrigger.Arn
+  DatabaseMirror:
+    Description: 'Mirror URL'
+    Value: !GetAtt S3Bucket.DomainName
